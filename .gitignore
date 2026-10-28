@@ -1,0 +1,28 @@
+
+# Configuración privada de Concrete CMS
+/application/config/database.php
+/application/config/generated_overrides/
+/application/config/site.php
+
+# Archivos subidos y caché
+/application/files/
+/application/files/cache/
+/application/files/tmp/
+
+# Dependencias de Composer
+/vendor/
+
+# Variables de entorno
+.env
+.env.*
+
+# Archivos de respaldo y temporales
+*.log
+*.sql
+*.zip
+*.bak
+*.tmp
+
+# Archivos de Windows
+Thumbs.db
+.DS_Store

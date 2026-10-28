@@ -1,0 +1,158 @@
+<?php
+namespace Concrete\Controller\Dialog\Board;
+
+use Concrete\Core\Block\BlockType\BlockType;
+use Concrete\Core\Board\Command\AddCustomSlotToBoardCommand;
+use Concrete\Core\Board\Helper\Traits\SlotTemplateJsonHelperTrait;
+use Concrete\Core\Board\Instance\Slot\Content\ContentPopulator;
+use Concrete\Core\Board\Instance\Slot\Template\AvailableTemplateCollectionFactory;
+use Concrete\Core\Entity\Board\Instance;
+use Concrete\Core\Entity\Board\InstanceItem;
+use Concrete\Core\Entity\Board\SlotTemplate;
+use Concrete\Core\Error\UserMessageException;
+use Concrete\Core\Foundation\Serializer\JsonSerializer;
+use Concrete\Core\Permission\Checker;
+use Doctrine\ORM\EntityManager;
+use Symfony\Component\HttpFoundation\JsonResponse;
+
+class CustomSlot extends \Concrete\Core\Controller\Controller
+{
+
+    use SlotTemplateJsonHelperTrait;
+
+    protected $viewPath = '/dialogs/boards/custom_slot';
+
+protected function validateCustomSlotToken()
+{
+    $token = $this->app->make('token');
+    if (!$token->validate('board_custom_slot')) {
+        throw new UserMessageException($token->getErrorMessage());
+    }
+}
+
+
+    protected function getInstanceFromRequest()
+    {
+        $entityManager = $this->app->make(EntityManager::class);
+        $canEdit = false;
+        if ($this->request->query->has('boardInstanceID')) {
+            /**
+             * @var $instance Instance
+             */
+            $instance = $entityManager->find(Instance::class, $this->request->query->get('boardInstanceID'));
+            if ($instance) {
+                $permissions = new Checker($instance->getBoard());
+                if ($permissions->canEditBoardContents()) {
+                    $canEdit = true;
+                }
+            }
+        }
+        if (!$canEdit) {
+            throw new UserMessageException(t('Access Denied'));
+        } else {
+            return $instance;
+        }
+    }
+
+    public function getTemplates()
+    {
+        $this->validateCustomSlotToken();
+        $entityManager = $this->app->make(EntityManager::class);
+        $contentPopulator = $this->app->make(ContentPopulator::class);
+        $availableTemplateCollectionFactory = $this->app->make(AvailableTemplateCollectionFactory::class);
+
+        $instance = $this->getInstanceFromRequest();
+        $items = [];
+        if (!empty($this->request->request->get('selectedItemIds'))) {
+            foreach ($this->request->request->get('selectedItemIds') as $itemId) {
+                $item = $entityManager->find(InstanceItem::class, $itemId);
+                // Only accept items that actually belong to the instance this user has been authorized
+                // to edit. Otherwise permission to edit one board would be enough to dereference an
+                // item belonging to another board and have its content rendered into this response.
+                if ($item instanceof InstanceItem
+                    && $item->getInstance()
+                    && $item->getInstance()->getBoardInstanceID() == $instance->getBoardInstanceID()
+                ) {
+                    $items[] = $item;
+                }
+            }
+        }
+        $templates = $availableTemplateCollectionFactory->getAvailableTemplates(
+            $instance, $this->request->request->get('slot')
+        );
+
+        // This response is built from user-supplied input and returned directly to the browser, so the
+        // content must be limited to what the current user is permitted to view.
+        $itemObjectGroups = $contentPopulator->createContentObjects($items, true);
+        return new JsonResponse($this->createSlotTemplateJsonArray($templates, $itemObjectGroups));
+    }
+
+    public function replace()
+    {
+        $instance = $this->getInstanceFromRequest();
+        $this->set('dataSourcesJson', json_encode($this->getDataSourcesJson($instance)));
+        $this->set('instance', $instance);
+        $this->set('slot', h($this->request->query->get('slot')));
+    }
+
+    public function searchItems()
+    {
+        $this->validateCustomSlotToken();
+        $instance = $this->getInstanceFromRequest();
+        return new JsonResponse($this->getDataSourcesJson(
+            $instance, $this->request->request->get('keywords')
+        ));
+    }
+
+    protected function getDataSourcesJson(Instance $instance, $keywords = null)
+    {
+        $dataSources = [];
+        $entityManager = $this->app->make(EntityManager::class);
+        foreach($instance->getBoard()->getDataSources() as $dataSource) {
+            $items = $entityManager->getRepository(InstanceItem::class)
+                ->findByDataSource($dataSource, $instance, $keywords);
+            $dataSources[] = [
+                'id' => $dataSource->getConfiguredDataSourceID(),
+                'name' => $dataSource->getName(),
+                'items' => $items,
+            ];
+        }
+        return $dataSources;
+    }
+
+    public function saveTemplate()
+    {
+        $this->validateCustomSlotToken();
+        $instance = $this->getInstanceFromRequest();
+        $slot = $this->request->request->get('slot');
+        $entityManager = $this->app->make(EntityManager::class);
+        $serializer = $this->app->make(JsonSerializer::class);
+
+        $data = $this->request->request->get('selectedTemplateOption');
+        $template = $entityManager->find(SlotTemplate::class, $data['template']['id']);
+        $collection = $serializer->serialize($data['collection'], 'json');
+
+        $type = BlockType::getByHandle(BLOCK_HANDLE_BOARD_SLOT_PROXY);
+        $data = [
+            'contentObjectCollection' => $collection,
+            'slotTemplateID' => $template->getId(),
+        ];
+        $block = $type->add($data);
+
+        $command = new AddCustomSlotToBoardCommand();
+        $command->setBlockID($block->getBlockID());
+        $command->setSlot($slot);
+        $command->setInstance($instance);
+        $rule = $this->app->executeCommand($command);
+        return new JsonResponse($rule);
+
+
+
+
+
+
+
+
+    }
+
+}

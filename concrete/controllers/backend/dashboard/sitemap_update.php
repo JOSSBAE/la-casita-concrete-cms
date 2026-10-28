@@ -1,0 +1,92 @@
+<?php
+
+namespace Concrete\Controller\Backend\Dashboard;
+
+use Concrete\Core\Application\Service\Dashboard\Sitemap;
+use Concrete\Core\Controller\AbstractController;
+use Concrete\Core\Error\UserMessageException;
+use Concrete\Core\Http\ResponseFactoryInterface;
+use Concrete\Core\Page\EditResponse;
+use Concrete\Core\Page\Page;
+use Concrete\Core\Permission\Checker;
+use Symfony\Component\HttpFoundation\Response;
+
+defined('C5_EXECUTE') or die('Access Denied.');
+
+class SitemapUpdate extends AbstractController
+{
+    /**
+     * @throws \Concrete\Core\Error\UserMessageException
+     */
+    public function view(): Response
+    {
+        $this->checkUser();
+        $token = $this->app->make('token');
+        if (!$token->validate()) {
+            throw new UserMessageException($token->getErrorMessage());
+        }
+        $this->updateDisplayOrder($this->getPageIDs());
+
+        return $this->buildResponse();
+    }
+
+    /**
+     * @throws \Concrete\Core\Error\UserMessageException
+     */
+    protected function checkUser(): void
+    {
+        $sh = $this->app->make(Sitemap::class);
+        if (!$sh->canRead()) {
+            throw new UserMessageException(t('Access Denied.'));
+        }
+    }
+
+    /**
+     * @return int[]
+     */
+    protected function getPageIDs(): array
+    {
+        $pageIDs = $this->request->request->get('cID', $this->request->query->get('cID'));
+        if (!is_array($pageIDs)) {
+            return [];
+        }
+
+        return array_values( // Reset array indexes
+            array_filter( // Remove zeroes
+                array_map( // Ensure integer types
+                    'intval',
+                    $pageIDs
+                )
+            )
+        );
+    }
+
+    /**
+     * @param int[] $pageIDs
+     */
+    protected function updateDisplayOrder(array $pageIDs): void
+    {
+        $pagesToUpdate = [];
+        foreach ($pageIDs as $displayOrder => $pageID) {
+            $c = Page::getByID($pageID);
+            if ($c && !$c->isError()) {
+                $checker = new Checker($c);
+                if (!$checker->canMoveOrCopyPage()) {
+                    throw new UserMessageException(t('You don\'t have permission to reorder the page "%s".', $c->getCollectionName()));
+                }
+                $pagesToUpdate[] = [$displayOrder, $pageID, $c];
+            }
+        }
+        foreach ($pagesToUpdate as [$displayOrder, $pageID, $page]) {
+            $page->updateDisplayOrder($displayOrder, $pageID);
+        }
+    }
+
+    protected function buildResponse(): Response
+    {
+        $r = new EditResponse();
+        $r->setMessage(t('Display order saved.'));
+
+        return $this->app->make(ResponseFactoryInterface::class)->json($r);
+    }
+}
